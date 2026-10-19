@@ -1,0 +1,105 @@
+diff --git a/packages/myst-cli/src/process/loadReferences.ts b/packages/myst-cli/src/process/loadReferences.ts
+index ad08daf..027c9dc 100644
+--- a/packages/myst-cli/src/process/loadReferences.ts
++++ b/packages/myst-cli/src/process/loadReferences.ts
+@@ -1,4 +1,5 @@
+ import fs from 'node:fs';
++import { fileURLToPath } from 'node:url';
+ import type { Response } from 'node-fetch';
+ import { Inventory } from 'intersphinx';
+ import { tic, isUrl, computeHash } from 'myst-cli-utils';
+@@ -19,6 +20,47 @@ import { XREF_MAX_AGE } from '../transforms/crossReferences.js';
+ import { dirname } from 'node:path';
+ import { logMessagesFromVFile } from '../utils/index.js';
+ 
++/**
++ * Load the raw body of a MyST xref or intersphinx inventory from either a local
++ * `file://` URL or a remote http(s) URL.
++ *
++ * This supports multi-project workspaces (monorepos / "kalaxies" of MyST sites)
++ * that want to resolve cross-references against already-built sibling projects
++ * on disk, without requiring the siblings to be deployed to a reachable URL.
++ *
++ * Returns the file text on success, or `undefined` on any failure. The caller
++ * decides how to log a failure (local-only, remote-only, or neither).
++ */
++async function fetchXrefBody(
++  session: ISession,
++  url: string,
++): Promise<{ ok: true; body: string } | { ok: false; status?: number }> {
++  if (url.startsWith('file://')) {
++    try {
++      const localPath = fileURLToPath(url);
++      if (fs.existsSync(localPath)) {
++        return { ok: true, body: fs.readFileSync(localPath, 'utf-8') };
++      }
++      session.log.debug(`Local xref file not found: ${localPath}`);
++      return { ok: false };
++    } catch (err) {
++      session.log.debug(`Error reading local xref file ${url}: ${(err as Error).message}`);
++      return { ok: false };
++    }
++  }
++  let resp: Response | undefined;
++  try {
++    resp = await session.fetch(url);
++  } catch {
++    session.log.debug(`Request to ${url} failed`);
++    return { ok: false };
++  }
++  if (resp?.status === 200) {
++    return { ok: true, body: await resp.text() };
++  }
++  return { ok: false, status: resp?.status };
++}
++
+ function inventoryCacheFilename(refKind: 'intersphinx' | 'myst', id: string, path: string) {
+   const hashcontent = `${id}${path}`;
+   const ext = refKind === 'intersphinx' ? 'inv' : 'json';
+@@ -81,28 +123,31 @@ async function loadReference(
+     return reference;
+   }
+   let mystXrefFetchError: boolean = false;
++  const isLocalRef = reference.url.startsWith('file://');
+   if (!reference.kind || reference.kind === 'myst') {
+     const mystXRefsUrl = `${reference.url}/myst.xref.json`;
+     session.log.debug(`Attempting to load MyST xref file: ${mystXRefsUrl}`);
+     const toc = tic();
+-    let mystXRefsResp: Response | undefined;
+-    try {
+-      mystXRefsResp = await session.fetch(mystXRefsUrl);
+-    } catch {
+-      session.log.debug(`Request to ${mystXRefsUrl} failed`);
+-    }
+-    if (mystXRefsResp?.status === 200) {
++    const result = await fetchXrefBody(session, mystXRefsUrl);
++    if (result.ok) {
+       reference.kind = 'myst';
+-      const mystXRefs = (await mystXRefsResp?.json()) as MystXRefs;
+-      session.log.debug(`Saving remote myst xref file to cache: ${reference.url}`);
+-      writeToCache(
+-        session,
+-        inventoryCacheFilename('myst', reference.key, reference.url),
+-        JSON.stringify(mystXRefs),
+-      );
++      const mystXRefs = JSON.parse(result.body) as MystXRefs;
++      // Only cache remote results; local file:// URLs are the cache.
++      if (!isLocalRef) {
++        session.log.debug(`Saving remote myst xref file to cache: ${reference.url}`);
++        writeToCache(
++          session,
++          inventoryCacheFilename('myst', reference.key, reference.url),
++          JSON.stringify(mystXRefs),
++        );
++      }
+       reference.value = mystXRefs;
+       session.log.info(
+-        toc(`🏫 Read ${mystXRefs.references.length} myst references for "${reference.key}" in %s.`),
++        toc(
++          `🏫 Read ${mystXRefs.references.length} myst references for "${reference.key}" in %s${
++            isLocalRef ? ' (local)' : ''
++          }.`,
++        ),
+       );
+       return reference;
+     } else if (reference.kind === 'myst') {

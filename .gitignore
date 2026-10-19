@@ -1,0 +1,9 @@
+# Upstream clone for local builds (fetched by rebuild workflow)
+upstream/
+myst.cjs
+VERSION
+
+# OS / editor
+.DS_Store
+*.log
+node_modules/

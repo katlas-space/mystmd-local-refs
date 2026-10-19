@@ -1,0 +1,120 @@
+name: Build and Release Patched mystmd
+
+# Each tag of the form `mystmd-<upstream-ver>+<n>` clones the matching upstream
+# jupyter-book/mystmd release, applies our patches, builds, and attaches the
+# compiled myst.cjs as a release asset.
+#
+# Examples:
+#   mystmd-1.11.0+1   builds against jupyter-book/mystmd@v1.11.0
+#   mystmd-1.12.0+1   builds against jupyter-book/mystmd@v1.12.0
+
+on:
+  push:
+    tags:
+      - 'mystmd-*'
+  workflow_dispatch:
+    inputs:
+      mystmd_version:
+        description: 'Upstream mystmd version (e.g. 1.11.0)'
+        required: true
+        default: 'main'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patches
+        uses: actions/checkout@v4
+        with:
+          path: patches-src
+
+      - name: Resolve upstream mystmd version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/mystmd-* ]]; then
+            TAG="${GITHUB_REF#refs/tags/mystmd-}"
+            MYSTMD_VER="${TAG%%+*}"
+          else
+            MYSTMD_VER="${{ github.event.inputs.mystmd_version }}"
+          fi
+          echo "mystmd_version=$MYSTMD_VER" >> "$GITHUB_OUTPUT"
+          echo "Building against jupyter-book/mystmd@$MYSTMD_VER"
+
+      - name: Clone upstream mystmd
+        run: |
+          if [ "${{ steps.ver.outputs.mystmd_version }}" = "main" ]; then
+            git clone --depth 1 https://github.com/jupyter-book/mystmd.git upstream
+          else
+            git clone --depth 1 --branch "v${{ steps.ver.outputs.mystmd_version }}" https://github.com/jupyter-book/mystmd.git upstream
+          fi
+
+      - name: Apply patches
+        working-directory: upstream
+        run: |
+          for p in ../patches-src/patches/*.patch; do
+            echo "Applying $p"
+            git apply "$p"
+          done
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3'
+
+      - name: Install dependencies
+        working-directory: upstream
+        run: bun install
+
+      - name: Build
+        working-directory: upstream
+        run: bun run build
+
+      - name: Verify artifact
+        run: |
+          test -s upstream/packages/mystmd/dist/myst.cjs
+          echo "Artifact size: $(du -h upstream/packages/mystmd/dist/myst.cjs | cut -f1)"
+          # Also save a sidecar with the upstream version so consumers know what they got
+          cp upstream/packages/mystmd/dist/myst.cjs ./myst.cjs
+          cat > ./VERSION <<EOF
+          upstream_version=${{ steps.ver.outputs.mystmd_version }}
+          patch_tag=${{ github.ref_name }}
+          build_sha=${{ github.sha }}
+          build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+          cat ./VERSION
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/mystmd-')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            myst.cjs
+            VERSION
+            patches-src/patches/*.patch
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            **Patched mystmd `${{ github.ref_name }}`** — built from upstream
+            [jupyter-book/mystmd@v${{ steps.ver.outputs.mystmd_version }}](https://github.com/jupyter-book/mystmd/releases/tag/v${{ steps.ver.outputs.mystmd_version }})
+            with the patches in [`patches/`](https://github.com/${{ github.repository }}/tree/main/patches) applied.
+
+            ## Patches applied
+            - `01-file-url-support.patch` — teaches `project.references` URL loader to accept `file://` URLs, so multi-project kalaxy builds can resolve sibling `myst.xref.json` from local disk without a running HTTP server.
+
+            ## Install
+            Download `myst.cjs` and run it with node:
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/myst.cjs -o myst-patched.cjs
+            node myst-patched.cjs build
+            ```
+
+            Or wire it into a project's build:
+            ```bash
+            # drop the binary at a stable location, wrap in a tiny shell script
+            # that invokes `node /path/to/myst-patched.cjs "$@"`
+            ```
+
+            See [README.md](https://github.com/${{ github.repository }}#readme) for how to consume this in a `just` recipe or CI pipeline.

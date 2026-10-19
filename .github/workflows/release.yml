@@ -44,11 +44,13 @@ jobs:
           echo "Building against jupyter-book/mystmd@$MYSTMD_VER"
 
       - name: Clone upstream mystmd
+        # jupyter-book/mystmd is a monorepo; the mystmd CLI package is tagged
+        # as `mystmd@<version>` (not `v<version>`). Example: mystmd@1.11.0
         run: |
           if [ "${{ steps.ver.outputs.mystmd_version }}" = "main" ]; then
             git clone --depth 1 https://github.com/jupyter-book/mystmd.git upstream
           else
-            git clone --depth 1 --branch "v${{ steps.ver.outputs.mystmd_version }}" https://github.com/jupyter-book/mystmd.git upstream
+            git clone --depth 1 --branch "mystmd@${{ steps.ver.outputs.mystmd_version }}" https://github.com/jupyter-book/mystmd.git upstream
           fi
 
       - name: Apply patches
@@ -98,7 +100,7 @@ jobs:
           generate_release_notes: true
           body: |
             **Patched mystmd `${{ github.ref_name }}`** — built from upstream
-            [jupyter-book/mystmd@v${{ steps.ver.outputs.mystmd_version }}](https://github.com/jupyter-book/mystmd/releases/tag/v${{ steps.ver.outputs.mystmd_version }})
+            [jupyter-book/mystmd@mystmd@${{ steps.ver.outputs.mystmd_version }}](https://github.com/jupyter-book/mystmd/releases/tag/mystmd%40${{ steps.ver.outputs.mystmd_version }})
             with the patches in [`patches/`](https://github.com/${{ github.repository }}/tree/main/patches) applied.
 
             ## Patches applied
